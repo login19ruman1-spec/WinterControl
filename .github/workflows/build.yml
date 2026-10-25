@@ -1,0 +1,30 @@
+name: Build WinterControl
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@v4
+
+      - name: Установить Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Собрать плагин
+        run: mvn --batch-mode --no-transfer-progress clean package
+
+      - name: Сохранить готовый JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinterControl-Paper-1.21.4
+          path: target/WinterControl.jar
+          if-no-files-found: error
