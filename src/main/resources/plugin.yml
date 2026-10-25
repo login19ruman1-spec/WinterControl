@@ -1,0 +1,18 @@
+name: WinterControl
+version: '1.0.0'
+main: ru.wintercontrol.WinterControl
+api-version: '1.21.4'
+description: 'Зимний режим, снегопад, источники тепла и управление остановкой тиков.'
+load: POSTWORLD
+
+commands:
+  winter:
+    description: 'Открыть русскоязычное меню управления зимой.'
+    usage: '/winter [menu|freeze|unfreeze]'
+    permission: wintercontrol.admin
+    permission-message: 'У тебя нет прав на управление зимой.'
+
+permissions:
+  wintercontrol.admin:
+    description: 'Доступ к меню, настройкам зимы и остановке тиков.'
+    default: op
