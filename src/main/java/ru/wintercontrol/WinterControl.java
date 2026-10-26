@@ -48,15 +48,48 @@ public final class WinterControl extends JavaPlugin
                 "В plugin.yml отсутствует команда winter"
         ).setExecutor(this);
 
-        climate = new WinterClimate(this);
-
         getServer().getPluginManager().registerEvents(this, this);
 
-        resetFreezeTimer();
-
-        getServer().getScheduler().runTaskTimer(
-                this, this::updateFreeze, 20L, 20L
+        getLogger().info(
+                "Подготовка хранилища WinterControl. "
+                        + "При первом запуске переносится старое состояние."
         );
+
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            WinterStorage storage = new WinterStorage(
+                    getDataFolder().toPath()
+            );
+
+            try {
+                storage.prepare();
+            } catch (Exception exception) {
+                getLogger().log(
+                        java.util.logging.Level.SEVERE,
+                        "Не удалось подготовить хранилище. "
+                                + "Климат не будет запущен.",
+                        exception
+                );
+                return;
+            }
+
+            // Возвращаемся в основной поток: Bukkit API
+            // (климат, планировщик, события) не потокобезопасен.
+            getServer().getScheduler().runTask(this, () -> {
+                if (!isEnabled()) {
+                    return;
+                }
+
+                climate = new WinterClimate(this);
+
+                resetFreezeTimer();
+
+                getServer().getScheduler().runTaskTimer(
+                        this, this::updateFreeze, 20L, 20L
+                );
+
+                getLogger().info("Хранилище готово, климат запущен.");
+            });
+        });
     }
 
     @Override
