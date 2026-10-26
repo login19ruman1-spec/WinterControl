@@ -1,69 +1,130 @@
 package ru.wintercontrol;
 
-import org.bukkit.*;
-import org.bukkit.block.Block;
-import org.bukkit.block.data.Levelled;
-import org.bukkit.block.data.Lightable;
-import org.bukkit.block.data.type.Snow;
-import org.bukkit.command.*;
-import org.bukkit.entity.*;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.ServerTickManager;
+import org.bukkit.World;
+
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+
+import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Fox;
+import org.bukkit.entity.Player;
+import org.bukkit.entity.Stray;
+
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+
 import org.bukkit.event.block.BlockFadeEvent;
 import org.bukkit.event.block.BlockFormEvent;
+
 import org.bukkit.event.entity.CreatureSpawnEvent;
+
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+
 import org.bukkit.event.weather.WeatherChangeEvent;
+
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 
 public final class WinterControl extends JavaPlugin
         implements Listener, CommandExecutor {
 
     private static final String PREFIX = "§b[Зима] §f";
 
-    private final Map<Material, Integer> heat = new EnumMap<>(Material.class);
-
-    private final Deque<ChunkTask> regularQueue = new ArrayDeque<>();
-    private final Deque<ChunkTask> snowQueue = new ArrayDeque<>();
+    private WinterClimate climate;
 
     private boolean ownsFreeze;
-    private WinterClimate climate;            
     private long thawDeadline;
     private long nextFreezeDeadline;
-    private int maxHeatRadius;
 
     private static final List<HeatSetting> HEAT_SETTINGS = List.of(
-            new HeatSetting("torch", Material.TORCH, "Факелы"),
-            new HeatSetting("lantern", Material.LANTERN, "Фонари"),
-            new HeatSetting("fire", Material.FIRE_CHARGE, "Огонь"),
-            new HeatSetting("campfire", Material.CAMPFIRE, "Костры"),
-            new HeatSetting("lava", Material.LAVA_BUCKET, "Лава"),
-            new HeatSetting("magma", Material.MAGMA_BLOCK, "Магмовые блоки"),
-            new HeatSetting("furnace", Material.FURNACE, "Работающие печи"),
-            new HeatSetting("candle", Material.CANDLE, "Свечи"),
-            new HeatSetting("soul", Material.SOUL_TORCH, "Огонь душ")
+            new HeatSetting(
+                    "torch",
+                    Material.TORCH,
+                    "Факелы"
+            ),
+            new HeatSetting(
+                    "lantern",
+                    Material.LANTERN,
+                    "Фонари"
+            ),
+            new HeatSetting(
+                    "fire",
+                    Material.FIRE_CHARGE,
+                    "Огонь"
+            ),
+            new HeatSetting(
+                    "campfire",
+                    Material.CAMPFIRE,
+                    "Горящие костры"
+            ),
+            new HeatSetting(
+                    "lava",
+                    Material.LAVA_BUCKET,
+                    "Лава"
+            ),
+            new HeatSetting(
+                    "magma",
+                    Material.MAGMA_BLOCK,
+                    "Магмовые блоки"
+            ),
+            new HeatSetting(
+                    "furnace",
+                    Material.FURNACE,
+                    "Работающие печи"
+            ),
+            new HeatSetting(
+                    "candle",
+                    Material.CANDLE,
+                    "Горящие свечи"
+            ),
+            new HeatSetting(
+                    "soul",
+                    Material.SOUL_TORCH,
+                    "Огонь душ"
+            )
     );
+
+    // =========================
+    // Запуск и выключение
+    // =========================
 
     @Override
     public void onEnable() {
         setupConfig();
-        rebuildHeat();
 
-        Objects.requireNonNull(getCommand("winter")).setExecutor(this);
+        Objects.requireNonNull(
+                getCommand("winter"),
+                "Команда winter не зарегистрирована в plugin.yml"
+        ).setExecutor(this);
+
         getServer().getPluginManager().registerEvents(this, this);
+
+        // Весь климат обрабатывает отдельный класс.
+        climate = new WinterClimate(this);
 
         resetFreezeTimer();
 
+        // Эта задача управляет только остановкой тиков.
         getServer().getScheduler().runTaskTimer(
-                this, this::heartbeat, 20L, 20L
+                this,
+                this::heartbeat,
+                20L,
+                20L
         );
 
         getLogger().info("WinterControl включён.");
@@ -71,7 +132,10 @@ public final class WinterControl extends JavaPlugin
 
     @Override
     public void onDisable() {
-        // Не снимаем чужую остановку тиков.
+        if (climate != null) {
+            climate.close();
+        }
+
         if (ownsFreeze && ticks().isFrozen()) {
             ticks().setFrozen(false);
         }
@@ -79,36 +143,32 @@ public final class WinterControl extends JavaPlugin
         saveConfig();
     }
 
-    private ServerTickManager ticks() {
-        return getServer().getServerTickManager();
-    }
-
     private void setupConfig() {
-        getConfig().addDefault("winter.enabled", false);
-        getConfig().addDefault("winter.cold-y", 50);
-        getConfig().addDefault("winter.animal-damage", 2.0);
+        var config = getConfig();
 
-        getConfig().addDefault("freeze.auto", false);
-        getConfig().addDefault("freeze.interval-seconds", 300);
-        getConfig().addDefault("freeze.duration-seconds", 10);
+        config.addDefault("winter.enabled", false);
+        config.addDefault("winter.cold-y", 50);
 
-        getConfig().addDefault("snow.layers", 8);
-        getConfig().addDefault("snow.long", false);
-        getConfig().addDefault("snow.max-layers", 32);
+        config.addDefault("freeze.auto", false);
+        config.addDefault("freeze.interval-seconds", 300);
+        config.addDefault("freeze.duration-seconds", 10);
 
-        getConfig().addDefault("performance.columns-per-second", 24);
+        config.addDefault("snow.layers", 8);
+        config.addDefault("snow.long", false);
+        config.addDefault("snow.max-layers", 32);
 
-        getConfig().addDefault("heat.torch", 3);
-        getConfig().addDefault("heat.lantern", 3);
-        getConfig().addDefault("heat.fire", 4);
-        getConfig().addDefault("heat.campfire", 4);
-        getConfig().addDefault("heat.lava", 5);
-        getConfig().addDefault("heat.magma", 2);
-        getConfig().addDefault("heat.furnace", 3);
-        getConfig().addDefault("heat.candle", 1);
-        getConfig().addDefault("heat.soul", 1);
+        config.addDefault("heat.torch", 3);
+        config.addDefault("heat.lantern", 3);
+        config.addDefault("heat.fire", 4);
+        config.addDefault("heat.campfire", 4);
+        config.addDefault("heat.lava", 5);
+        config.addDefault("heat.magma", 2);
+        config.addDefault("heat.furnace", 3);
+        config.addDefault("heat.candle", 1);
+        config.addDefault("heat.soul", 1);
 
-        getConfig().options().copyDefaults(true);
+        // Остальные настройки добавит WinterClimate.
+        config.options().copyDefaults(true);
         saveConfig();
     }
 
@@ -120,17 +180,24 @@ public final class WinterControl extends JavaPlugin
         return world.getEnvironment() == World.Environment.NORMAL;
     }
 
-    private int number(String path, int min, int max) {
-        return Math.max(min, Math.min(max, getConfig().getInt(path)));
-    }
-
-    private long deadline(int seconds) {
-        return System.nanoTime() + seconds * 1_000_000_000L;
+    private int number(String path, int minimum, int maximum) {
+        return Math.max(
+                minimum,
+                Math.min(maximum, getConfig().getInt(path))
+        );
     }
 
     // =========================
     // Остановка тиков
     // =========================
+
+    private ServerTickManager ticks() {
+        return getServer().getServerTickManager();
+    }
+
+    private long deadline(int seconds) {
+        return System.nanoTime() + seconds * 1_000_000_000L;
+    }
 
     private void resetFreezeTimer() {
         nextFreezeDeadline = deadline(
@@ -147,35 +214,45 @@ public final class WinterControl extends JavaPlugin
         ownsFreeze = true;
 
         thawDeadline = automatic
-                ? deadline(number("freeze.duration-seconds", 1, 3600))
+                ? deadline(
+                        number("freeze.duration-seconds", 1, 3600)
+                )
                 : 0L;
 
-        Bukkit.broadcastMessage(PREFIX + (
-                automatic
-                        ? "Время остановлено автоматически."
-                        : "Время остановлено администратором."
-        ));
+        Bukkit.broadcastMessage(
+                PREFIX + (
+                        automatic
+                                ? "Тики остановлены автоматически."
+                                : "Тики остановлены администратором."
+                )
+        );
     }
 
     private void unfreeze() {
         ticks().setFrozen(false);
+
         ownsFreeze = false;
         thawDeadline = 0L;
+
         resetFreezeTimer();
 
-        Bukkit.broadcastMessage(PREFIX + "Время снова идёт.");
+        Bukkit.broadcastMessage(PREFIX + "Тики снова идут.");
     }
 
     private void updateFreeze() {
         long now = System.nanoTime();
 
+        // Если тики возобновили внешней командой,
+        // начинаем отсчёт интервала заново.
         if (ownsFreeze && !ticks().isFrozen()) {
             ownsFreeze = false;
             thawDeadline = 0L;
             resetFreezeTimer();
         }
 
-        if (ownsFreeze && thawDeadline != 0L && now >= thawDeadline) {
+        if (ownsFreeze
+                && thawDeadline != 0L
+                && now >= thawDeadline) {
             unfreeze();
         }
 
@@ -186,441 +263,14 @@ public final class WinterControl extends JavaPlugin
         }
     }
 
-    // =========================
-    // Основная задача
-    // =========================
-
     private void heartbeat() {
+        // Старую обработку снега и животных здесь не запускаем.
+        // Иначе она будет конфликтовать с WinterClimate.
         updateFreeze();
-
-        // Таймер работает, но зима не изменяет замороженный мир.
-        if (!winterEnabled() || ticks().isFrozen()) {
-            return;
-        }
-
-        for (World world : Bukkit.getWorlds()) {
-            if (!winterWorld(world)) {
-                continue;
-            }
-
-            if (world.hasStorm()) {
-                world.setStorm(false);
-            }
-
-            updateAnimals(world);
-        }
-
-        int budget = number("performance.columns-per-second", 1, 256);
-
-        if (regularQueue.isEmpty()) {
-            fillQueue(regularQueue, 0);
-        }
-
-        processQueue(regularQueue, budget, false);
-        processQueue(snowQueue, budget, true);
-
-        if (getConfig().getBoolean("snow.long") || !snowQueue.isEmpty()) {
-            snowParticles();
-        }
-    }
-
-    private void fillQueue(Deque<ChunkTask> queue, int targetLayers) {
-        for (World world : Bukkit.getWorlds()) {
-            if (!winterWorld(world)) {
-                continue;
-            }
-
-            for (Chunk chunk : world.getLoadedChunks()) {
-                queue.addLast(new ChunkTask(
-                        world.getUID(),
-                        chunk.getX(),
-                        chunk.getZ(),
-                        targetLayers
-                ));
-            }
-        }
-    }
-
-    private void processQueue(
-            Deque<ChunkTask> queue,
-            int budget,
-            boolean snowOnly
-    ) {
-        for (int i = 0; i < budget && !queue.isEmpty(); i++) {
-            ChunkTask task = queue.peekFirst();
-            World world = Bukkit.getWorld(task.worldId);
-
-            if (world == null
-                    || !world.isChunkLoaded(task.chunkX, task.chunkZ)) {
-                queue.removeFirst();
-                continue;
-            }
-
-            int column = task.column++;
-
-            int x = task.chunkX * 16 + (column & 15);
-            int z = task.chunkZ * 16 + (column >> 4);
-
-            Block top = surface(world, x, z);
-
-            if (snowOnly) {
-                if (!isWarm(top)) {
-                    addSnow(top, task.targetLayers, task.targetLayers);
-                }
-            } else {
-                updateSurface(top);
-            }
-
-            if (task.column >= 256) {
-                queue.removeFirst();
-            }
-        }
-    }
-
-    private Block surface(World world, int x, int z) {
-        int y = world.getHighestBlockYAt(
-                x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES
-        );
-
-        return world.getBlockAt(x, y, z);
     }
 
     // =========================
-    // Снег и вода
-    // =========================
-
-    private void updateSurface(Block top) {
-        Material material = top.getType();
-        boolean longSnow = getConfig().getBoolean("snow.long");
-
-        boolean relevant = longSnow
-                || material == Material.WATER
-                || material == Material.ICE
-                || material == Material.SNOW
-                || material == Material.SNOW_BLOCK;
-
-        if (!relevant) {
-            return;
-        }
-
-        if (isWarm(top)) {
-            melt(top);
-            return;
-        }
-
-        if (material == Material.WATER
-                && top.getBlockData() instanceof Levelled water
-                && water.getLevel() == 0) {
-            top.setType(Material.ICE, false);
-            return;
-        }
-
-        if (longSnow) {
-            addSnow(top, 1, number("snow.max-layers", 1, 64));
-        }
-    }
-
-    private void melt(Block block) {
-        if (block.getBlockData() instanceof Snow snow) {
-            if (snow.getLayers() <= 1) {
-                block.setType(Material.AIR, false);
-            } else {
-                snow.setLayers(snow.getLayers() - 1);
-                block.setBlockData(snow, false);
-            }
-        } else if (block.getType() == Material.SNOW_BLOCK) {
-            Snow snow = (Snow) Material.SNOW.createBlockData();
-            snow.setLayers(7);
-            block.setBlockData(snow, false);
-        } else if (block.getType() == Material.ICE) {
-            block.setType(Material.WATER, false);
-        }
-    }
-
-    private int snowThickness(Block top) {
-        int result = 0;
-        Block current = top;
-
-        for (int i = 0; i < 64; i++) {
-            if (current.getBlockData() instanceof Snow snow) {
-                result += snow.getLayers();
-            } else if (current.getType() == Material.SNOW_BLOCK) {
-                result += 8;
-            } else {
-                break;
-            }
-
-            if (current.getY() <= current.getWorld().getMinHeight()) {
-                break;
-            }
-
-            current = current.getRelative(0, -1, 0);
-        }
-
-        return result;
-    }
-
-    private void addSnow(Block top, int amount, int limit) {
-        int count = Math.min(amount, Math.max(0, limit - snowThickness(top)));
-
-        for (int i = 0; i < count; i++) {
-            if (top.getBlockData() instanceof Snow snow) {
-                if (snow.getLayers() < snow.getMaximumLayers()) {
-                    snow.setLayers(snow.getLayers() + 1);
-                    top.setBlockData(snow, false);
-                    continue;
-                }
-
-                if (!spaceAbove(top)) {
-                    return;
-                }
-
-                top.setType(Material.SNOW_BLOCK, false);
-            } else if (!top.getType().isOccluding()) {
-                return;
-            }
-
-            if (!spaceAbove(top)) {
-                return;
-            }
-
-            top = top.getRelative(0, 1, 0);
-            top.setType(Material.SNOW, false);
-        }
-    }
-
-    private boolean spaceAbove(Block block) {
-        return block.getY() < block.getWorld().getMaxHeight() - 1
-                && block.getRelative(0, 1, 0).getType().isAir();
-    }
-
-    private void startSnowPass(Player player) {
-        snowQueue.clear();
-
-        fillQueue(snowQueue, number("snow.layers", 1, 64));
-
-        player.sendMessage(PREFIX
-                + "Разовый снегопад запущен. Чанков: "
-                + snowQueue.size() + ".");
-    }
-
-    private void snowParticles() {
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (!winterWorld(player.getWorld())) {
-                continue;
-            }
-
-            if (player.getLocation().getBlock().getLightFromSky() < 14) {
-                continue;
-            }
-
-            player.spawnParticle(
-                    Particle.SNOWFLAKE,
-                    player.getLocation().add(0, 7, 0),
-                    50,
-                    10, 4, 10,
-                    0.02
-            );
-        }
-    }
-
-    // =========================
-    // Тепло
-    // =========================
-
-    private String heatGroup(Material material) {
-        return switch (material) {
-            case TORCH, WALL_TORCH -> "torch";
-            case LANTERN -> "lantern";
-            case FIRE -> "fire";
-            case CAMPFIRE -> "campfire";
-            case LAVA -> "lava";
-            case MAGMA_BLOCK -> "magma";
-            case FURNACE, BLAST_FURNACE, SMOKER -> "furnace";
-            case SOUL_TORCH, SOUL_WALL_TORCH, SOUL_LANTERN,
-                 SOUL_FIRE, SOUL_CAMPFIRE -> "soul";
-            default -> {
-                String name = material.name();
-
-                yield name.equals("CANDLE")
-                        || name.endsWith("_CANDLE")
-                        || name.endsWith("CANDLE_CAKE")
-                        ? "candle" : null;
-            }
-        };
-    }
-
-    private void rebuildHeat() {
-        heat.clear();
-        maxHeatRadius = 0;
-
-        for (Material material : Material.values()) {
-            if (!material.isBlock()) {
-                continue;
-            }
-
-            String group = heatGroup(material);
-
-            if (group == null) {
-                continue;
-            }
-
-            int radius = number("heat." + group, 0, 8);
-
-            heat.put(material, radius);
-            maxHeatRadius = Math.max(maxHeatRadius, radius);
-        }
-    }
-
-    private boolean isWarm(Block target) {
-        World world = target.getWorld();
-        int radius = maxHeatRadius;
-
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                int x = target.getX() + dx;
-                int z = target.getZ() + dz;
-
-                // Не загружаем соседние чанки ради поиска тепла.
-                if (!world.isChunkLoaded(x >> 4, z >> 4)) {
-                    continue;
-                }
-
-                for (int dy = -radius; dy <= radius; dy++) {
-                    int distance = dx * dx + dy * dy + dz * dz;
-
-                    if (distance > radius * radius) {
-                        continue;
-                    }
-
-                    int y = target.getY() + dy;
-
-                    if (y < world.getMinHeight()
-                            || y >= world.getMaxHeight()) {
-                        continue;
-                    }
-
-                    Block source = world.getBlockAt(x, y, z);
-                    Integer sourceRadius = heat.get(source.getType());
-
-                    if (sourceRadius == null
-                            || sourceRadius <= 0
-                            || distance > sourceRadius * sourceRadius) {
-                        continue;
-                    }
-
-                    if (source.getBlockData() instanceof Lightable light
-                            && !light.isLit()) {
-                        continue;
-                    }
-
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    // =========================
-    // Животные и зимние мобы
-    // =========================
-
-    private void updateAnimals(World world) {
-        int coldY = getConfig().getInt("winter.cold-y");
-
-        double damage = Math.max(0.0, Math.min(
-                100.0,
-                getConfig().getDouble("winter.animal-damage")
-        ));
-
-        if (damage <= 0) {
-            return;
-        }
-
-        for (Animals animal : world.getEntitiesByClass(Animals.class)) {
-            if (!animal.isValid() || animal.isDead()) {
-                continue;
-            }
-
-            if (animal instanceof PolarBear) {
-                continue;
-            }
-
-            if (animal instanceof Fox fox
-                    && fox.getFoxType() == Fox.Type.SNOW) {
-                continue;
-            }
-
-            if (animal.getLocation().getY() >= coldY) {
-                animal.damage(damage);
-            }
-        }
-    }
-
-    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
-    public void onSpawn(CreatureSpawnEvent event) {
-        if (!winterEnabled()
-                || !winterWorld(event.getEntity().getWorld())
-                || event.getSpawnReason()
-                != CreatureSpawnEvent.SpawnReason.NATURAL) {
-            return;
-        }
-
-        if (event.getEntityType() == EntityType.SKELETON) {
-            event.setCancelled(true);
-
-            event.getEntity().getWorld().spawn(
-                    event.getLocation(), Stray.class
-            );
-        } else if (event.getEntity() instanceof Fox fox) {
-            fox.setFoxType(Fox.Type.SNOW);
-        }
-
-        // Криперы остаются обычными.
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onWeather(WeatherChangeEvent event) {
-        if (winterEnabled()
-                && winterWorld(event.getWorld())
-                && event.toWeatherState()) {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onFade(BlockFadeEvent event) {
-        if (!winterEnabled()
-                || !winterWorld(event.getBlock().getWorld())) {
-            return;
-        }
-
-        Material type = event.getBlock().getType();
-
-        if (type == Material.SNOW
-                || type == Material.SNOW_BLOCK
-                || type == Material.ICE) {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onForm(BlockFormEvent event) {
-        if (!winterEnabled()
-                || !winterWorld(event.getBlock().getWorld())) {
-            return;
-        }
-
-        Material type = event.getNewState().getType();
-
-        if (type == Material.SNOW || type == Material.ICE) {
-            event.setCancelled(true);
-        }
-    }
-
-    // =========================
-    // Команды
+    // Команда /winter
     // =========================
 
     @Override
@@ -644,13 +294,17 @@ public final class WinterControl extends JavaPlugin
                 if (sender instanceof Player player) {
                     openMenu(player, Page.MAIN);
                 } else {
-                    sender.sendMessage(PREFIX + "Меню доступно игрокам.");
+                    sender.sendMessage(
+                            PREFIX + "Меню доступно только игрокам."
+                    );
                 }
             }
 
             case "freeze" -> {
                 if (ticks().isFrozen()) {
-                    sender.sendMessage(PREFIX + "Тики уже остановлены.");
+                    sender.sendMessage(
+                            PREFIX + "Тики уже остановлены."
+                    );
                 } else {
                     freeze(false);
                 }
@@ -667,7 +321,7 @@ public final class WinterControl extends JavaPlugin
     }
 
     // =========================
-    // Русское меню
+    // Создание кнопок
     // =========================
 
     private ItemStack button(
@@ -679,9 +333,12 @@ public final class WinterControl extends JavaPlugin
         ItemMeta meta = item.getItemMeta();
 
         meta.setDisplayName("§b" + name);
-        meta.setLore(Arrays.stream(description)
-                .map(line -> "§7" + line)
-                .toList());
+
+        meta.setLore(
+                Arrays.stream(description)
+                        .map(line -> "§7" + line)
+                        .toList()
+        );
 
         item.setItemMeta(meta);
         return item;
@@ -696,166 +353,327 @@ public final class WinterControl extends JavaPlugin
 
         String title = switch (page) {
             case MAIN -> "§1Управление зимой";
-            case SNOW -> "§1Настройка снега";
+            case SNOW -> "§1Настройка снегопадов";
             case HEAT -> "§1Источники тепла";
         };
 
-        Inventory inventory = Bukkit.createInventory(holder, 54, title);
+        Inventory inventory = Bukkit.createInventory(
+                holder,
+                54,
+                title
+        );
+
         holder.inventory = inventory;
 
-        if (page == Page.MAIN) {
-            inventory.setItem(10, button(
-                    Material.SNOW_BLOCK,
-                    "Зимний режим",
-                    state(winterEnabled()),
-                    "Клик: включить / выключить"
-            ));
-
-            inventory.setItem(11, button(
-                    Material.CLOCK,
-                    "Автоматическая остановка",
-                    state(getConfig().getBoolean("freeze.auto")),
-                    "Клик: включить / выключить"
-            ));
-
-            inventory.setItem(12, button(
-                    Material.REPEATER,
-                    "Интервал: "
-                            + getConfig().getInt("freeze.interval-seconds")
-                            + " сек.",
-                    "От разморозки до следующей остановки",
-                    "ЛКМ: +10; ПКМ: -10 секунд",
-                    "С Shift: шаг 100 секунд"
-            ));
-
-            inventory.setItem(13, button(
-                    Material.COMPASS,
-                    "Длительность: "
-                            + getConfig().getInt("freeze.duration-seconds")
-                            + " сек.",
-                    "ЛКМ: +1; ПКМ: -1 секунда",
-                    "С Shift: шаг 10 секунд"
-            ));
-
-            inventory.setItem(14, button(
-                    Material.BLUE_ICE,
-                    "Остановить время",
-                    "Ручная остановка тиков",
-                    "До ручного возобновления"
-            ));
-
-            inventory.setItem(15, button(
-                    Material.SUNFLOWER,
-                    "Возобновить время",
-                    ticks().isFrozen()
-                            ? "Сейчас тики остановлены"
-                            : "Сейчас тики идут"
-            ));
-
-            inventory.setItem(16, button(
-                    Material.IRON_SHOVEL,
-                    "Граница холода Y: "
-                            + getConfig().getInt("winter.cold-y"),
-                    "На этой высоте и выше животные мёрзнут",
-                    "ЛКМ: +1; ПКМ: -1",
-                    "С Shift: шаг 10"
-            ));
-
-            inventory.setItem(22, button(
-                    Material.SNOWBALL,
-                    "Снегопад",
-                    "Открыть настройки"
-            ));
-
-            inventory.setItem(31, button(
-                    Material.CAMPFIRE,
-                    "Тепло и таяние",
-                    "Открыть настройки"
-            ));
-        }
-
-        if (page == Page.SNOW) {
-            inventory.setItem(10, button(
-                    Material.SNOW,
-                    "Разовая толщина: "
-                            + getConfig().getInt("snow.layers")
-                            + " слоёв",
-                    "ЛКМ: +1; ПКМ: -1",
-                    "С Shift: шаг 10"
-            ));
-
-            inventory.setItem(11, button(
-                    Material.SNOW_BLOCK,
-                    "Запустить разовый снег",
-                    "Довести снег до выбранной толщины",
-                    "Только в загруженных чанках"
-            ));
-
-            inventory.setItem(12, button(
-                    Material.POWDER_SNOW_BUCKET,
-                    "Долгий снегопад",
-                    state(getConfig().getBoolean("snow.long")),
-                    "Клик: включить / выключить"
-            ));
-
-            inventory.setItem(13, button(
-                    Material.BARRIER,
-                    "Остановить снегопад",
-                    "Отменяет и незавершённый разовый проход"
-            ));
-
-            inventory.setItem(14, button(
-                    Material.WHITE_WOOL,
-                    "Предел: "
-                            + getConfig().getInt("snow.max-layers")
-                            + " слоёв",
-                    "Максимум для долгого снегопада",
-                    "ЛКМ: +1; ПКМ: -1",
-                    "С Shift: шаг 10"
-            ));
-        }
-
-        if (page == Page.HEAT) {
-            for (int i = 0; i < HEAT_SETTINGS.size(); i++) {
-                HeatSetting setting = HEAT_SETTINGS.get(i);
-
-                inventory.setItem(10 + i, button(
-                        setting.icon(),
-                        setting.name(),
-                        "Радиус: "
-                                + getConfig().getInt("heat." + setting.key())
-                                + " блоков",
-                        "ЛКМ: увеличить; ПКМ: уменьшить",
-                        "0 — отключить источник",
-                        "Тепло проходит через стены"
-                ));
-            }
+        switch (page) {
+            case MAIN -> fillMainMenu(inventory);
+            case SNOW -> fillSnowMenu(inventory);
+            case HEAT -> fillHeatMenu(inventory);
         }
 
         if (page != Page.MAIN) {
-            inventory.setItem(49, button(Material.ARROW, "Назад"));
+            inventory.setItem(
+                    49,
+                    button(Material.ARROW, "Назад")
+            );
         }
 
         player.openInventory(inventory);
     }
 
-    private void toggle(String path) {
-        getConfig().set(path, !getConfig().getBoolean(path));
+    // =========================
+    // Главное меню
+    // =========================
+
+    private void fillMainMenu(Inventory inventory) {
+        // Слот 10: второй ряд, вторая ячейка.
+        inventory.setItem(10, button(
+                winterEnabled()
+                        ? Material.SNOW_BLOCK
+                        : Material.GRASS_BLOCK,
+                winterEnabled()
+                        ? "Зима: включена"
+                        : "Зима: выключена",
+                "Клик: включить или выключить зиму",
+                "Зимой вода замерзает и идут снегопады",
+                "После выключения снег и лёд плагина тают"
+        ));
+
+        inventory.setItem(11, button(
+                Material.CLOCK,
+                "Автоматическая остановка тиков",
+                state(getConfig().getBoolean("freeze.auto")),
+                "Клик: включить или выключить",
+                "Работает независимо от зимнего режима"
+        ));
+
+        inventory.setItem(12, button(
+                Material.REPEATER,
+                "Интервал остановок: "
+                        + getConfig().getInt(
+                                "freeze.interval-seconds"
+                        )
+                        + " сек.",
+                "От разморозки до следующей остановки",
+                "ЛКМ: +10; ПКМ: -10 секунд",
+                "С Shift: шаг 100 секунд"
+        ));
+
+        inventory.setItem(13, button(
+                Material.COMPASS,
+                "Длительность остановки: "
+                        + getConfig().getInt(
+                                "freeze.duration-seconds"
+                        )
+                        + " сек.",
+                "Для автоматической остановки",
+                "ЛКМ: +1; ПКМ: -1 секунда",
+                "С Shift: шаг 10 секунд"
+        ));
+
+        inventory.setItem(14, button(
+                Material.BLUE_ICE,
+                "Остановить тики вручную",
+                "Как /tick freeze",
+                "До ручного возобновления"
+        ));
+
+        inventory.setItem(15, button(
+                Material.SUNFLOWER,
+                "Возобновить тики",
+                ticks().isFrozen()
+                        ? "§cСейчас тики остановлены"
+                        : "§aСейчас тики идут",
+                "Как /tick unfreeze"
+        ));
+
+        inventory.setItem(16, button(
+                Material.LEATHER_CHESTPLATE,
+                "Безопасная глубина игроков",
+                "Граница Y: "
+                        + getConfig().getInt("cold.players-y"),
+                "Ниже границы холод не наносит урон",
+                "На границе и выше нужно тепло",
+                "ЛКМ: +1; ПКМ: -1; Shift: шаг 10"
+        ));
+
+        inventory.setItem(19, button(
+                Material.WHEAT,
+                "Безопасная глубина мирных мобов",
+                "Граница Y: "
+                        + getConfig().getInt("cold.passive-y"),
+                "Ниже границы холод не наносит урон",
+                "Источники тепла тоже защищают",
+                "ЛКМ: +1; ПКМ: -1; Shift: шаг 10"
+        ));
+
+        inventory.setItem(20, button(
+                Material.ROTTEN_FLESH,
+                "Безопасная глубина враждебных мобов",
+                "Граница Y: "
+                        + getConfig().getInt("cold.hostile-y"),
+                "Ниже границы холод не наносит урон",
+                "Криперы и зимние мобы защищены",
+                "ЛКМ: +1; ПКМ: -1; Shift: шаг 10"
+        ));
+
+        inventory.setItem(22, button(
+                Material.SNOWBALL,
+                "Снегопад",
+                "Открыть настройки снега",
+                "Периодичность, густота и накопление"
+        ));
+
+        inventory.setItem(31, button(
+                Material.CAMPFIRE,
+                "Тепло и таяние",
+                "Настроить радиусы источников тепла"
+        ));
     }
 
-    private void change(String path, int delta, int min, int max) {
+    // =========================
+    // Меню снега
+    // =========================
+
+    private void fillSnowMenu(Inventory inventory) {
+        inventory.setItem(10, button(
+                Material.SNOW,
+                "Разовая толщина: "
+                        + getConfig().getInt("snow.layers")
+                        + " слоёв",
+                "8 слоёв = высота одного блока",
+                "ЛКМ: +1; ПКМ: -1; Shift: шаг 10"
+        ));
+
+        inventory.setItem(11, button(
+                Material.SNOW_BLOCK,
+                "Запустить разовое покрытие",
+                "Постепенно довести снег до выбранной толщины",
+                "Только в загруженных чанках",
+                "Зимний режим должен быть включён"
+        ));
+
+        inventory.setItem(12, button(
+                Material.POWDER_SNOW_BUCKET,
+                "Непрерывный снегопад",
+                state(getConfig().getBoolean("snow.long")),
+                "Клик: переключить и снять паузу",
+                "Когда выключен — снегопады периодические"
+        ));
+
+        inventory.setItem(13, button(
+                Material.BARRIER,
+                "Приостановить снегопады",
+                "Отменить разовый проход и непрерывный снег",
+                "Для возобновления нажми кнопку справа"
+        ));
+
+        inventory.setItem(14, button(
+                Material.WHITE_WOOL,
+                "Предел накопления: "
+                        + getConfig().getInt("snow.max-layers")
+                        + " слоёв",
+                "Максимум при обычных снегопадах",
+                "ЛКМ: +1; ПКМ: -1; Shift: шаг 10"
+        ));
+
+        inventory.setItem(15, button(
+                Material.CLOCK,
+                "Пауза между снегопадами: "
+                        + getConfig().getInt(
+                                "snow.interval-seconds"
+                        )
+                        + " сек.",
+                "Для периодического режима",
+                "ЛКМ: +10; ПКМ: -10 секунд",
+                "С Shift: шаг 100 секунд",
+                "Применяется при следующем назначении паузы"
+        ));
+
+        inventory.setItem(16, button(
+                Material.COMPASS,
+                "Продолжительность снегопада: "
+                        + getConfig().getInt(
+                                "snow.duration-seconds"
+                        )
+                        + " сек.",
+                "Для следующих периодических снегопадов",
+                "ЛКМ: +5; ПКМ: -5 секунд",
+                "С Shift: шаг 50 секунд"
+        ));
+
+        inventory.setItem(19, button(
+                Material.QUARTZ,
+                "Густота частиц: "
+                        + getConfig().getInt(
+                                "snow.particles-per-step"
+                        ),
+                "Количество за проход на одного игрока",
+                "ЛКМ: +10; ПКМ: -10",
+                "С Shift: шаг 100",
+                "Большие значения нагружают клиент"
+        ));
+
+        inventory.setItem(22, button(
+                Material.SUNFLOWER,
+                "Возобновить периодические снегопады",
+                getConfig().getBoolean("snow.paused")
+                        ? "§cСейчас снегопады приостановлены"
+                        : "§aПаузы нет",
+                "Отключает непрерывный режим",
+                "Снегопады снова будут идти периодически"
+        ));
+    }
+
+    // =========================
+    // Меню тепла
+    // =========================
+
+    private void fillHeatMenu(Inventory inventory) {
+        for (int i = 0; i < HEAT_SETTINGS.size(); i++) {
+            HeatSetting setting = HEAT_SETTINGS.get(i);
+
+            inventory.setItem(10 + i, button(
+                    setting.icon(),
+                    setting.name(),
+                    "Радиус: "
+                            + getConfig().getInt(
+                                    "heat." + setting.key()
+                            )
+                            + " блоков",
+                    "ЛКМ: увеличить; ПКМ: уменьшить",
+                    "0 — отключить источник",
+                    "Тепло защищает от холода и топит снег",
+                    "В этой версии проходит через стены"
+            ));
+        }
+    }
+
+    // =========================
+    // Изменение настроек
+    // =========================
+
+    private void toggle(String path) {
+        getConfig().set(
+                path,
+                !getConfig().getBoolean(path)
+        );
+    }
+
+    private void change(
+            String path,
+            int delta,
+            int minimum,
+            int maximum
+    ) {
         long value = (long) getConfig().getInt(path) + delta;
 
-        getConfig().set(path, (int) Math.max(min, Math.min(max, value)));
+        int result = (int) Math.max(
+                minimum,
+                Math.min(maximum, value)
+        );
+
+        getConfig().set(path, result);
     }
+
+    private boolean requireWinter(Player player) {
+        if (winterEnabled()) {
+            return true;
+        }
+
+        player.sendMessage(
+                PREFIX + "Сначала включи зимний режим."
+        );
+
+        return false;
+    }
+
+    private void startSnowPass(Player player) {
+        int chunks = climate.coverNow(
+                number("snow.layers", 1, 64)
+        );
+
+        player.sendMessage(
+                PREFIX
+                        + "Разовое покрытие запущено. Чанков: "
+                        + chunks
+                        + "."
+        );
+    }
+
+    // =========================
+    // Нажатия в меню
+    // =========================
 
     @EventHandler
     public void onClick(InventoryClickEvent event) {
-        if (!(event.getView().getTopInventory().getHolder()
-                instanceof Menu menu)) {
+        Inventory top = event.getView().getTopInventory();
+
+        if (!(top.getHolder() instanceof Menu menu)) {
             return;
         }
 
+        // Запрещаем забирать кнопки и переносить предметы.
         event.setCancelled(true);
 
         if (!(event.getWhoClicked() instanceof Player player)) {
@@ -863,18 +681,15 @@ public final class WinterControl extends JavaPlugin
         }
 
         if (!player.hasPermission("wintercontrol.admin")) {
-            player.closeInventory();
             return;
         }
 
         int slot = event.getRawSlot();
 
-        if (slot < 0
-                || slot >= event.getView().getTopInventory().getSize()) {
+        if (slot < 0 || slot >= top.getSize()) {
             return;
         }
 
-        // Не обрабатываем среднюю кнопку и цифровые клавиши.
         if (!event.isLeftClick() && !event.isRightClick()) {
             return;
         }
@@ -885,109 +700,309 @@ public final class WinterControl extends JavaPlugin
             step *= 10;
         }
 
-        Page target = menu.page;
+        Page nextPage = menu.page;
 
-        if (slot == 49) {
-            target = Page.MAIN;
-        } else if (menu.page == Page.MAIN) {
-            switch (slot) {
-                case 10 -> {
-                    toggle("winter.enabled");
-                    regularQueue.clear();
+        if (slot == 49 && menu.page != Page.MAIN) {
+            nextPage = Page.MAIN;
+        } else {
+            switch (menu.page) {
+                case MAIN -> {
+                    switch (slot) {
+                        case 10 -> {
+                            toggle("winter.enabled");
 
-                    if (!winterEnabled()) {
-                        snowQueue.clear();
-                    }
-                }
+                            if (winterEnabled()) {
+                                getConfig().set(
+                                        "snow.paused",
+                                        false
+                                );
 
-                case 11 -> {
-                    toggle("freeze.auto");
-                    resetFreezeTimer();
-                }
+                                player.sendMessage(
+                                        PREFIX
+                                                + "Зима включена."
+                                );
+                            } else {
+                                player.sendMessage(
+                                        PREFIX
+                                                + "Зима выключена. "
+                                                + "Созданные плагином "
+                                                + "снег и лёд будут таять."
+                                );
+                            }
+                        }
 
-                case 12 -> {
-                    change("freeze.interval-seconds", step * 10, 1, 86400);
-                    resetFreezeTimer();
-                }
+                        case 11 -> {
+                            toggle("freeze.auto");
+                            resetFreezeTimer();
+                        }
 
-                case 13 ->
-                        change("freeze.duration-seconds", step, 1, 3600);
+                        case 12 -> {
+                            change(
+                                    "freeze.interval-seconds",
+                                    step * 10,
+                                    1,
+                                    86400
+                            );
 
-                case 14 -> {
-                    if (ticks().isFrozen()) {
-                        player.sendMessage(PREFIX + "Тики уже остановлены.");
-                    } else {
-                        freeze(false);
-                    }
-                }
+                            resetFreezeTimer();
+                        }
 
-                case 15 -> unfreeze();
-
-                case 16 ->
-                        change("winter.cold-y", step, -64, 320);
-
-                case 22 -> target = Page.SNOW;
-                case 31 -> target = Page.HEAT;
-                default -> { }
-            }
-        } else if (menu.page == Page.SNOW) {
-            switch (slot) {
-                case 10 -> change("snow.layers", step, 1, 64);
-
-                case 11 -> {
-                    if (winterEnabled()) {
-                        startSnowPass(player);
-                    } else {
-                        player.sendMessage(
-                                PREFIX + "Сначала включи зимний режим."
+                        case 13 -> change(
+                                "freeze.duration-seconds",
+                                step,
+                                1,
+                                3600
                         );
-                    }
-                }
 
-                case 12 -> {
-                    if (winterEnabled()) {
-                        toggle("snow.long");
-                    } else {
-                        player.sendMessage(
-                                PREFIX + "Сначала включи зимний режим."
+                        case 14 -> {
+                            if (ticks().isFrozen()) {
+                                player.sendMessage(
+                                        PREFIX
+                                                + "Тики уже остановлены."
+                                );
+                            } else {
+                                freeze(false);
+                            }
+                        }
+
+                        case 15 -> unfreeze();
+
+                        case 16 -> change(
+                                "cold.players-y",
+                                step,
+                                -64,
+                                320
                         );
+
+                        case 19 -> change(
+                                "cold.passive-y",
+                                step,
+                                -64,
+                                320
+                        );
+
+                        case 20 -> change(
+                                "cold.hostile-y",
+                                step,
+                                -64,
+                                320
+                        );
+
+                        case 22 -> nextPage = Page.SNOW;
+
+                        case 31 -> nextPage = Page.HEAT;
+
+                        default -> {
+                        }
                     }
                 }
 
-                case 13 -> {
-                    getConfig().set("snow.long", false);
-                    snowQueue.clear();
+                case SNOW -> {
+                    switch (slot) {
+                        case 10 -> change(
+                                "snow.layers",
+                                step,
+                                1,
+                                64
+                        );
+
+                        case 11 -> {
+                            if (requireWinter(player)) {
+                                startSnowPass(player);
+                            }
+                        }
+
+                        case 12 -> {
+                            if (requireWinter(player)) {
+                                toggle("snow.long");
+
+                                getConfig().set(
+                                        "snow.paused",
+                                        false
+                                );
+                            }
+                        }
+
+                        case 13 -> {
+                            climate.stopSnow();
+
+                            player.sendMessage(
+                                    PREFIX
+                                            + "Снегопады приостановлены."
+                            );
+                        }
+
+                        case 14 -> change(
+                                "snow.max-layers",
+                                step,
+                                1,
+                                64
+                        );
+
+                        case 15 -> change(
+                                "snow.interval-seconds",
+                                step * 10,
+                                1,
+                                86400
+                        );
+
+                        case 16 -> change(
+                                "snow.duration-seconds",
+                                step * 5,
+                                1,
+                                3600
+                        );
+
+                        case 19 -> change(
+                                "snow.particles-per-step",
+                                step * 10,
+                                0,
+                                500
+                        );
+
+                        case 22 -> {
+                            if (requireWinter(player)) {
+                                getConfig().set(
+                                        "snow.long",
+                                        false
+                                );
+
+                                getConfig().set(
+                                        "snow.paused",
+                                        false
+                                );
+
+                                player.sendMessage(
+                                        PREFIX
+                                                + "Периодические "
+                                                + "снегопады разрешены."
+                                );
+                            }
+                        }
+
+                        default -> {
+                        }
+                    }
                 }
 
-                case 14 -> change("snow.max-layers", step, 1, 64);
-                default -> { }
-            }
-        } else if (menu.page == Page.HEAT) {
-            int index = slot - 10;
+                case HEAT -> {
+                    int index = slot - 10;
 
-            if (index >= 0 && index < HEAT_SETTINGS.size()) {
-                HeatSetting setting = HEAT_SETTINGS.get(index);
+                    if (index >= 0
+                            && index < HEAT_SETTINGS.size()) {
+                        HeatSetting setting =
+                                HEAT_SETTINGS.get(index);
 
-                change("heat." + setting.key(), step, 0, 8);
-                rebuildHeat();
+                        change(
+                                "heat." + setting.key(),
+                                step,
+                                0,
+                                8
+                        );
+
+                        // WinterClimate сам перечитает радиусы.
+                    }
+                }
             }
         }
 
         saveConfig();
 
-        Page finalTarget = target;
+        Page target = nextPage;
 
-        getServer().getScheduler().runTask(this, () -> {
-            if (player.isOnline()) {
-                openMenu(player, finalTarget);
+        // Открываем новое меню после обработки события.
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (player.isOnline()
+                    && player.hasPermission("wintercontrol.admin")
+                    && player.getOpenInventory()
+                            .getTopInventory() == top) {
+                openMenu(player, target);
             }
         });
     }
 
     @EventHandler
     public void onDrag(InventoryDragEvent event) {
-        if (event.getView().getTopInventory().getHolder()
-                instanceof Menu) {
+        if (event.getView()
+                .getTopInventory()
+                .getHolder() instanceof Menu) {
+            event.setCancelled(true);
+        }
+    }
+
+    // =========================
+    // Зимние варианты мобов
+    // =========================
+
+    @EventHandler(
+            priority = EventPriority.HIGH,
+            ignoreCancelled = true
+    )
+    public void onSpawn(CreatureSpawnEvent event) {
+        if (!winterEnabled()
+                || !winterWorld(event.getEntity().getWorld())
+                || event.getSpawnReason()
+                != CreatureSpawnEvent.SpawnReason.NATURAL) {
+            return;
+        }
+
+        if (event.getEntityType() == EntityType.SKELETON) {
+            event.setCancelled(true);
+
+            event.getEntity().getWorld().spawn(
+                    event.getLocation(),
+                    Stray.class
+            );
+        } else if (event.getEntity() instanceof Fox fox) {
+            fox.setFoxType(Fox.Type.SNOW);
+        }
+
+        // Криперы остаются обычными.
+    }
+
+    // =========================
+    // Контроль погоды и снега
+    // =========================
+
+    @EventHandler(ignoreCancelled = true)
+    public void onWeather(WeatherChangeEvent event) {
+        if (winterEnabled()
+                && winterWorld(event.getWorld())
+                && event.toWeatherState()) {
+            // Вместо ванильного дождя используется
+            // снегопад из WinterClimate.
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onFade(BlockFadeEvent event) {
+        if (!winterEnabled()
+                || !winterWorld(event.getBlock().getWorld())) {
+            return;
+        }
+
+        Material material = event.getBlock().getType();
+
+        if (material == Material.SNOW
+                || material == Material.SNOW_BLOCK
+                || material == Material.ICE) {
+            // Во время зимы таянием управляет WinterClimate.
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onForm(BlockFormEvent event) {
+        if (!winterEnabled()
+                || !winterWorld(event.getBlock().getWorld())) {
+            return;
+        }
+
+        Material result = event.getNewState().getType();
+
+        if (result == Material.SNOW || result == Material.ICE) {
+            // Образованием снега и льда управляет WinterClimate.
             event.setCancelled(true);
         }
     }
@@ -1003,6 +1018,7 @@ public final class WinterControl extends JavaPlugin
     }
 
     private static final class Menu implements InventoryHolder {
+
         private final Page page;
         private Inventory inventory;
 
@@ -1021,26 +1037,5 @@ public final class WinterControl extends JavaPlugin
             Material icon,
             String name
     ) {
-    }
-
-    private static final class ChunkTask {
-        private final UUID worldId;
-        private final int chunkX;
-        private final int chunkZ;
-        private final int targetLayers;
-
-        private int column;
-
-        private ChunkTask(
-                UUID worldId,
-                int chunkX,
-                int chunkZ,
-                int targetLayers
-        ) {
-            this.worldId = worldId;
-            this.chunkX = chunkX;
-            this.chunkZ = chunkZ;
-            this.targetLayers = targetLayers;
-        }
     }
 }
