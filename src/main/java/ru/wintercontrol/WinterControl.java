@@ -35,6 +35,7 @@ public final class WinterControl extends JavaPlugin
     private final Deque<ChunkTask> snowQueue = new ArrayDeque<>();
 
     private boolean ownsFreeze;
+    private WinterClimate climate;            
     private long thawDeadline;
     private long nextFreezeDeadline;
     private int maxHeatRadius;
