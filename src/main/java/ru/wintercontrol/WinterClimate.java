@@ -1111,6 +1111,13 @@ public final class WinterClimate {
     // Холод, глубина и ночь
     // ========================
 
+    private boolean isHandheldHeat(Material material) {
+        return material == Material.TORCH
+                || material == Material.SOUL_TORCH
+                || material == Material.LANTERN
+                || material == Material.SOUL_LANTERN;
+    }
+
     private boolean immune(LivingEntity entity) {
         return entity instanceof Stray
                 || entity instanceof Creeper
@@ -1183,9 +1190,17 @@ public final class WinterClimate {
                 UUID id = entity.getUniqueId();
                 present.add(id);
 
+                boolean holdingTorch = entity instanceof Player player
+                        && plugin.getConfig().getBoolean(
+                                "cold.handheld-torch-enabled", true
+                        )
+                        && (isHandheldHeat(player.getInventory().getItemInMainHand().getType())
+                            || isHandheldHeat(player.getInventory().getItemInOffHand().getType()));
+
                 boolean safe = entity.getLocation().getY()
                         < plugin.getConfig().getInt(path)
-                        || warm(entity.getLocation().getBlock());
+                        || warm(entity.getLocation().getBlock())
+                        || holdingTorch;
 
                 if (safe) {
                     coldSince.remove(id);
@@ -1212,7 +1227,14 @@ public final class WinterClimate {
                         text += " §cНайди тепло или спустись ниже!";
                     }
 
-                    player.sendActionBar(text);
+                    int progress = (int) Math.max(0, Math.min(10,
+                            Math.floor((double) elapsed / Math.max(1L, grace) * 10.0)));
+                    StringBuilder bar = new StringBuilder(" §b[");
+                    for (int segment = 0; segment < 10; segment++) {
+                        bar.append(segment < progress ? "§c▌" : "§7▌");
+                    }
+                    bar.append("§b]");
+                    player.sendActionBar(text + bar);
                 }
 
                 if (elapsed >= grace
