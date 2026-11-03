@@ -80,6 +80,7 @@ public final class WinterClimate {
         c.addDefault("cold.damage-interval-seconds", 2);
         c.addDefault("cold.night-enabled", true);
         c.addDefault("cold.night-multiplier", 2.0);
+        c.addDefault("cold.handheld-torch-enabled", true);
 
         c.addDefault("snow.interval-seconds", 90);
         c.addDefault("snow.duration-seconds", 45);
