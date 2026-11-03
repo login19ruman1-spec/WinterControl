@@ -337,6 +337,14 @@ public final class WinterControl extends JavaPlugin
                         "Глубина и тепло продолжают защищать"
                 ));
 
+                inv.setItem(24, button(
+                        Material.TORCH,
+                        "Факел в руке согревает",
+                        state("cold.handheld-torch-enabled"),
+                        "Держи факел или фонарь в основной",
+                        "или второй руке, чтобы не замёрзнуть"
+                ));
+
                 inv.setItem(31, button(
                         Material.CAMPFIRE, "Источники тепла",
                         "Настроить радиусы"
@@ -555,6 +563,7 @@ public final class WinterControl extends JavaPlugin
                         );
                         case 22 -> next = Page.SNOW;
                         case 23 -> toggle("cold.night-enabled");
+                        case 24 -> toggle("cold.handheld-torch-enabled");
                         case 31 -> next = Page.HEAT;
                         default -> { }
                     }
